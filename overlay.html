@@ -1,0 +1,1637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream Overlay Control Panel</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Google Font 'Inter' -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <!-- Load Socket.IO -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+
+    <style>
+        /* Transparent body, 1920x1080 */
+        body {
+            width: 1920px;
+            height: 1080px;
+            margin: 0;
+            padding: 0;
+            background-color: transparent;
+            position: relative;
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+            color: white;
+        }
+        
+        /* Make widgets draggable */
+        .draggable {
+            position: absolute;
+            transform-origin: top left;
+        }
+        
+        /* Show drag cursor only when controls are hidden */
+        body:not(.controls-visible) .draggable {
+            cursor: move;
+        }
+        body.controls-visible .draggable {
+            cursor: default;
+        }
+
+        /* --- Drag Handle --- */
+        .drag-handle {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 30px;
+            height: 30px;
+            background: rgba(239, 68, 68, 0.6);
+            border-bottom: 2px solid white;
+            border-right: 2px solid white;
+            cursor: move;
+            z-index: 20;
+        }
+        .drag-handle::before {
+            content: '⋮⋮';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) rotate(90deg);
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+            line-height: 1;
+        }
+        
+        /* --- Resize Handles --- */
+        .resize-handle {
+            display: none;
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            width: 15px;
+            height: 15px;
+            background: rgba(239, 68, 68, 0.7);
+            border-top: 2px solid white;
+            border-left: 2px solid white;
+            cursor: nwse-resize;
+            z-index: 10;
+        }
+        .font-resize-handle {
+            display: none;
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 15px;
+            height: 15px;
+            background: rgba(59, 130, 246, 0.7);
+            border-top: 2px solid white;
+            border-right: 2px solid white;
+            cursor: nesw-resize;
+            z-index: 10;
+        }
+        
+        /* Show handles on hover */
+        body:not(.controls-visible) .draggable:hover .resize-handle,
+        body:not(.controls-visible) .draggable:hover .font-resize-handle,
+        body:not(.controls-visible) .draggable:hover .drag-handle {
+            display: block;
+        }
+
+        /* --- Player Widget Styling --- */
+        .player-widget {
+            width: 360px;
+            background-color: rgba(0, 0, 0, 0.85);
+            border-radius: 8px;
+            border-left: 4px solid #EF4444;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            padding: 12px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .player-widget img, .discord-widget img {
+            background-color: #333;
+        }
+        .truncate {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* --- Bottom Text Styling --- */
+        .bottom-text {
+            width: 624px;
+            height: 54px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            color: white;
+            text-shadow: 0 0 5px rgba(0,0,0,0.7);
+        }
+        .bottom-text span {
+            width: 100%;
+            padding: 0 25px;
+            text-align: center;
+        }
+
+        /* --- Discord Widget Styling --- */
+        .discord-widget {
+            display: inline-block;
+            background: transparent;
+            padding: 0;
+            overflow: hidden;
+        }
+        .discord-widget iframe {
+            display: block;
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+        body:not(.controls-visible) #discord-iframe {
+            pointer-events: none;
+        }
+        
+        /* --- Twitch Chat Widget Styling --- */
+        .twitch-chat-widget {
+            display: inline-block;
+            background: transparent;
+            padding: 0;
+            overflow: hidden;
+            width: 350px;
+            height: 500px;
+            position: relative;
+        }
+        .twitch-chat-widget iframe {
+            display: block;
+            width: 100%;
+            height: 100%;
+            border: none;
+            position: relative;
+            z-index: 2;
+        }
+        /* Allow iframe interaction - dragging only works when clicking outside iframe */
+        body:not(.controls-visible) #twitch-chat-iframe {
+            pointer-events: auto;
+        }
+        .widget-placeholder {
+            position: absolute;
+            top: 0;
+            left: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            padding: 16px;
+            background: rgba(17, 24, 39, 0.85);
+            border: 2px dashed rgba(239, 68, 68, 0.6);
+            color: rgba(255, 255, 255, 0.85);
+            font-weight: 600;
+            text-align: center;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            z-index: 1;
+        }
+
+        /* --- Control Panel Styling --- */
+        #controls {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(10, 10, 20, 0.95);
+            backdrop-filter: blur(10px);
+            z-index: 1000;
+            overflow-y: auto;
+            padding: 40px;
+            color: white;
+        }
+        .control-section {
+            background: rgba(40, 40, 50, 0.8);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+        .control-section h2 {
+            font-size: 2.25rem;
+            font-weight: 900;
+            color: #EF4444;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #333;
+            padding-bottom: 10px;
+        }
+        .control-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .control-group label {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: #aaa;
+            text-transform: uppercase;
+        }
+        .control-group input[type="text"],
+        .control-group input[type="url"] {
+            font-size: 1rem;
+            padding: 12px;
+            border-radius: 6px;
+            border: 2px solid #555;
+            background: #222;
+            color: white;
+            transition: border-color 0.2s;
+        }
+        .control-group input[type="text"]:focus,
+        .control-group input[type="url"]:focus {
+            outline: none;
+            border-color: #EF4444;
+        }
+        .control-group select {
+            font-size: 1rem;
+            padding: 12px;
+            border-radius: 6px;
+            border: 2px solid #555;
+            background: #222;
+            color: white;
+            transition: border-color 0.2s;
+        }
+        .control-group select:focus {
+            outline: none;
+            border-color: #EF4444;
+        }
+        /* Style for file inputs */
+        .control-group input[type="file"] {
+            font-size: 0.9rem;
+            background: #333;
+            border-radius: 6px;
+            padding: 8px;
+            border: 2px solid #555;
+        }
+        .control-group img {
+            width: 64px;
+            height: 64px;
+            border-radius: 8px;
+            background: #444;
+            object-fit: cover;
+            border: 2px solid #555;
+        }
+        
+        /* Custom Dropdown Styles */
+        .custom-dropdown {
+            position: relative;
+            width: 100%;
+        }
+        .custom-dropdown-input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+        .custom-dropdown-arrow {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #aaa;
+            font-size: 0.7rem;
+            cursor: pointer;
+            padding: 4px;
+            transition: color 0.2s, transform 0.2s;
+            z-index: 10;
+            user-select: none;
+        }
+        .custom-dropdown-arrow:hover {
+            color: #EF4444;
+        }
+        .custom-dropdown.open .custom-dropdown-arrow {
+            transform: translateY(-50%) rotate(180deg);
+        }
+        .custom-dropdown-clear {
+            position: absolute;
+            right: 28px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #aaa;
+            font-size: 0.9rem;
+            cursor: pointer;
+            padding: 4px;
+            transition: color 0.2s;
+            z-index: 10;
+            user-select: none;
+            display: none;
+            font-weight: bold;
+            width: 18px;
+            height: 18px;
+            line-height: 18px;
+            text-align: center;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .custom-dropdown-clear:hover {
+            color: #EF4444;
+            background: rgba(239, 68, 68, 0.2);
+        }
+        .custom-dropdown.has-value .custom-dropdown-clear {
+            display: block;
+        }
+        .custom-dropdown input[type="text"] {
+            padding-right: 50px;
+            cursor: text;
+        }
+        .custom-dropdown-list {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            max-height: 400px;
+            overflow-y: auto;
+            background: #222;
+            border: 2px solid #555;
+            border-top: none;
+            border-radius: 0 0 6px 6px;
+            z-index: 1000;
+            margin-top: -2px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        }
+        /* Custom scrollbar styling */
+        .custom-dropdown-list::-webkit-scrollbar {
+            width: 8px;
+        }
+        .custom-dropdown-list::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+        .custom-dropdown-list::-webkit-scrollbar-thumb {
+            background: #555;
+            border-radius: 4px;
+        }
+        .custom-dropdown-list::-webkit-scrollbar-thumb:hover {
+            background: #EF4444;
+        }
+        .custom-dropdown.open .custom-dropdown-list {
+            display: block;
+        }
+        .custom-dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            cursor: pointer;
+            border-bottom: 1px solid #333;
+            transition: background-color 0.2s;
+        }
+        .custom-dropdown-item:last-child {
+            border-bottom: none;
+        }
+        .custom-dropdown-item:hover {
+            background: #333;
+        }
+        .custom-dropdown-item.selected {
+            background: rgba(239, 68, 68, 0.2);
+            border-left: 3px solid #EF4444;
+        }
+        .custom-dropdown-item img {
+            width: 48px;
+            height: 48px;
+            border-radius: 6px;
+            object-fit: cover;
+            border: 2px solid #555;
+            flex-shrink: 0;
+        }
+        .custom-dropdown-item-name {
+            flex: 1;
+            color: white;
+            font-size: 0.95rem;
+            font-weight: 500;
+        }
+        .custom-dropdown-empty {
+            padding: 20px;
+            text-align: center;
+            color: #aaa;
+            font-style: italic;
+        }
+        
+        /* Visibility Section */
+        .visibility-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 12px;
+        }
+        .visibility-grid label {
+            display: flex;
+            align-items: center;
+            background: #222;
+            padding: 12px;
+            border-radius: 6px;
+            border: 2px solid #555;
+            gap: 10px;
+            cursor: pointer;
+        }
+        .visibility-grid input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            accent-color: #EF4444;
+        }
+
+        #close-controls {
+            position: fixed;
+            top: 30px;
+            right: 40px;
+            background: #EF4444;
+            color: white;
+            font-size: 1rem;
+            font-weight: 700;
+            padding: 12px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            z-index: 1001;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+            transition: transform 0.2s ease;
+        }
+        #close-controls:hover {
+            transform: scale(1.05);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+        .visible {
+            visibility: visible !important;
+        }
+    </style>
+</head>
+<body class="controls-hidden">
+
+    <!-- 
+      ==================================
+      ===== OVERLAY ELEMENTS
+      ==================================
+    -->
+
+    <!-- Player Widget -->
+    <div id="player" class="player-widget draggable">
+        <img id="player-pfp" src="" class="w-16 h-16 rounded-full border-2 border-gray-600 flex-shrink-0">
+        <div class="flex-grow min-w-0">
+            <div id="player-name" class="text-xl font-bold truncate"></div>
+            <div id="player-team" class="text-md text-red-400 font-semibold truncate"></div>
+        </div>
+        <div class="flex flex-col items-center w-16 flex-shrink-0 text-center">
+            <img id="player-squad-icon" src="" class="w-12 h-12 rounded">
+        </div>
+        <div class="flex flex-col items-center w-16 flex-shrink-0 text-center">
+            <img id="player-op-icon" src="" class="w-12 h-12 rounded">
+        </div>
+        <div class="resize-handle"></div>
+    </div>
+
+    <!-- Bottom Text Areas -->
+    <div id="text-left" class="bottom-text draggable">
+        <span id="text-left-display" class="truncate"></span>
+        <div class="resize-handle"></div>
+        <div class="font-resize-handle"></div>
+    </div>
+    <div id="text-right" class="bottom-text draggable">
+        <span id="text-right-display" class="truncate"></span>
+        <div class="resize-handle"></div>
+        <div class="font-resize-handle"></div>
+    </div>
+    
+    <!-- Discord Widget -->
+    <div id="discord-widget" class="discord-widget draggable">
+        <iframe id="discord-iframe" src="" allowtransparency="true"></iframe>
+        <div class="resize-handle"></div>
+    </div>
+
+    <!-- Twitch Chat Widget -->
+    <div id="twitch-widget" class="twitch-chat-widget draggable">
+        <div id="twitch-chat-placeholder" class="widget-placeholder hidden">
+            Twitch chat will appear here once a channel is set and the overlay is served over HTTP/HTTPS.
+        </div>
+        <div class="drag-handle"></div>
+        <iframe id="twitch-chat-iframe" src="" allowtransparency="true" frameborder="0" scrolling="no"></iframe>
+        <div class="resize-handle"></div>
+    </div>
+
+
+    <!-- 
+      ==================================
+      ===== CONTROL PANEL
+      ==================================
+    -->
+    <div id="controls">
+        <button id="close-controls" title="Close Controls">Close Panel</button>
+        
+        <div class="max-w-7xl mx-auto">
+            
+            <!-- Visibility Controls -->
+            <div class="control-section">
+                <h2>Visibility</h2>
+                <div class="visibility-grid">
+                    <label>
+                        <input type="checkbox" id="toggle-player" data-path="player.visible"> Player Widget
+                    </label>
+                    <label>
+                        <input type="checkbox" id="toggle-text-left" data-path="text_left.visible"> Left Text
+                    </label>
+                    <label>
+                        <input type="checkbox" id="toggle-text-right" data-path="text_right.visible"> Right Text
+                    </label>
+                    <label>
+                        <input type="checkbox" id="toggle-discord" data-path="discord_widget.visible"> Discord Widget
+                    </label>
+                    <label>
+                        <input type="checkbox" id="toggle-twitch" data-path="twitch_chat.visible"> Twitch Chat
+                    </label>
+                </div>
+            </div>
+
+            <!-- Player Controls -->
+            <div class="control-section">
+                <h2>Player Controls</h2>
+                <div class="control-grid">
+                    <div class="control-group">
+                        <label for="input-player-name">Player Name</label>
+                        <input type="text" id="input-player-name" data-path="player.name">
+                    </div>
+                    <div class="control-group">
+                        <label for="input-player-team">Team Name</label>
+                        <input type="text" id="input-player-team" data-path="player.team">
+                    </div>
+                    <div class="control-group">
+                        <label for="input-player-pfp">Discord PFP</label>
+                        <input type="file" id="input-player-pfp" data-path="player.pfp_url" accept="image/*">
+                        <img id="preview-player-pfp" src="" alt="PFP Preview">
+                    </div>
+                    <div class="control-group">
+                        <label for="input-player-squad-icon">Squad Icon</label>
+                        <div class="custom-dropdown" id="squad-dropdown">
+                            <div class="custom-dropdown-input-wrapper">
+                                <input type="text" id="input-player-squad-icon" data-path="player.squad_icon_url" placeholder="Search for a squad..." autocomplete="off">
+                                <span class="custom-dropdown-clear" id="squad-clear">×</span>
+                                <span class="custom-dropdown-arrow" id="squad-arrow">▼</span>
+                            </div>
+                            <div class="custom-dropdown-list" id="squad-dropdown-list"></div>
+                        </div>
+                        <img id="preview-player-squad-icon" src="" alt="Squad Preview">
+                    </div>
+                    <div class="control-group">
+                        <label for="input-player-op-icon">Operator Icon</label>
+                        <div class="custom-dropdown" id="operator-dropdown">
+                            <div class="custom-dropdown-input-wrapper">
+                                <input type="text" id="input-player-op-icon" data-path="player.op_icon_url" placeholder="Search for an operator..." autocomplete="off">
+                                <span class="custom-dropdown-clear" id="operator-clear">×</span>
+                                <span class="custom-dropdown-arrow" id="operator-arrow">▼</span>
+                            </div>
+                            <div class="custom-dropdown-list" id="operator-dropdown-list"></div>
+                        </div>
+                        <img id="preview-player-op-icon" src="" alt="Op Preview">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bottom Text Controls -->
+            <div class="control-section">
+                <h2>Bottom Text Controls</h2>
+                <div class="control-grid">
+                    <div class="control-group">
+                        <label for="input-text-left">Bottom Left Text</label>
+                        <input type="text" id="input-text-left" data-path="text_left.text">
+                    </div>
+                    <div class="control-group">
+                        <label for="input-text-right">Bottom Right Text</label>
+                        <input type="text" id="input-text-right" data-path="text_right.text">
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Discord Controls -->
+            <div class="control-section">
+                <h2>Discord Reactive Widget</h2>
+                <div class="control-grid">
+                    <div class="control-group">
+                        <label for="input-discord-url">Discord Reactive URL</label>
+                        <input type="url" id="input-discord-url" data-path="discord_widget.url">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Twitch Chat Controls -->
+            <div class="control-section">
+                <h2>Twitch Chat Widget</h2>
+                <div class="control-grid">
+                    <div class="control-group">
+                        <label for="input-twitch-channel">Twitch Channel</label>
+                        <input type="text" id="input-twitch-channel" data-path="twitch_chat.channel" placeholder="e.g., yourchannel">
+                    </div>
+                    <div class="control-group">
+                        <label for="input-twitch-theme">Theme</label>
+                        <select id="input-twitch-theme" data-path="twitch_chat.theme">
+                            <option value="dark">Dark</option>
+                            <option value="light">Light</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- 
+      ==================================
+      ===== JAVASCRIPT LOGIC
+      ==================================
+    -->
+    <script>
+        // === GLOBAL VARS ===
+        let appData = {};
+        let isControlPanel = false;
+        let socket;
+        let activeElement = null; // For dragging/resizing
+        let discordIframeOrigin = null;
+
+        // --- Utility ---
+        function getProp(obj, path) {
+            return path.split('.').reduce((acc, part) => acc && acc[part], obj);
+        }
+        function setProp(obj, path, value) {
+            const parts = path.split('.');
+            const last = parts.pop();
+            const target = parts.reduce((acc, part) => acc[part] = acc[part] || {}, obj);
+            target[last] = value;
+        }
+
+        function normalizeTwitchChannelInput(value) {
+            if (value === undefined || value === null) return '';
+            let input = String(value).trim();
+            if (!input) return '';
+
+            // Take the first whitespace-delimited token
+            input = input.split(/\s+/)[0];
+
+            const stripDecorations = (raw) => {
+                if (!raw) return '';
+                let result = raw.replace(/^@/, '');
+                result = result.replace(/^twitch\.tv\//i, '');
+                result = result.replace(/^www\.twitch\.tv\//i, '');
+                result = result.replace(/\/chat$/i, '');
+                result = result.replace(/\/+$/, '');
+                result = result.replace(/\?.*$/, '');
+                result = result.replace(/#.*/, '');
+                return result.toLowerCase();
+            };
+
+            const ensureProtocol = (raw) => {
+                if (/^https?:\/\//i.test(raw)) return raw;
+                return `https://${raw.replace(/^\/+/, '')}`;
+            };
+
+            try {
+                const parsed = new URL(ensureProtocol(input));
+                if (!parsed.hostname.toLowerCase().includes('twitch.tv')) {
+                    return stripDecorations(input);
+                }
+                const segments = parsed.pathname.split('/').filter(Boolean);
+                if (segments.length === 0) return '';
+                const trimmedSegments = [...segments];
+                const lastIndex = trimmedSegments.length - 1;
+                if (trimmedSegments[lastIndex]?.toLowerCase() === 'chat') {
+                    trimmedSegments.pop();
+                }
+                if (trimmedSegments.length === 0) return '';
+                const first = trimmedSegments[0]?.toLowerCase() ?? '';
+                if ((first === 'embed' || first === 'popout') && trimmedSegments.length >= 2) {
+                    return stripDecorations(trimmedSegments[1]);
+                }
+                return stripDecorations(trimmedSegments[0]);
+            } catch (err) {
+                return stripDecorations(input);
+            }
+        }
+
+        function isTwitchEmbedSupported() {
+            return window.location.protocol === 'http:' || window.location.protocol === 'https:';
+        }
+
+        // --- Load Operators and Squads Lists ---
+        let operatorsList = [];
+        let squadsList = [];
+
+        async function loadOperatorsList() {
+            try {
+                const response = await fetch('/api/operators');
+                operatorsList = await response.json();
+                const dropdownList = document.getElementById('operator-dropdown-list');
+                if (dropdownList) {
+                    dropdownList.innerHTML = '';
+                    operatorsList.forEach(op => {
+                        const item = document.createElement('div');
+                        item.className = 'custom-dropdown-item';
+                        item.dataset.value = op;
+                        const img = document.createElement('img');
+                        img.src = `img/Operators/${op}`;
+                        img.alt = op;
+                        img.onerror = function() { this.style.display = 'none'; };
+                        const name = document.createElement('div');
+                        name.className = 'custom-dropdown-item-name';
+                        name.textContent = op.replace('.png', '');
+                        item.appendChild(img);
+                        item.appendChild(name);
+                        item.addEventListener('click', () => {
+                            selectOperator(op);
+                        });
+                        dropdownList.appendChild(item);
+                    });
+                    console.log('Loaded', operatorsList.length, 'operators');
+                }
+            } catch (err) {
+                console.error('Failed to load operators list:', err);
+            }
+        }
+
+        async function loadSquadsList() {
+            try {
+                const response = await fetch('/api/squads');
+                squadsList = await response.json();
+                const dropdownList = document.getElementById('squad-dropdown-list');
+                if (dropdownList) {
+                    dropdownList.innerHTML = '';
+                    squadsList.forEach(squad => {
+                        const item = document.createElement('div');
+                        item.className = 'custom-dropdown-item';
+                        item.dataset.value = squad;
+                        const img = document.createElement('img');
+                        img.src = `img/Squads/${squad}`;
+                        img.alt = squad;
+                        img.onerror = function() { this.style.display = 'none'; };
+                        const name = document.createElement('div');
+                        name.className = 'custom-dropdown-item-name';
+                        name.textContent = squad.replace('.webp', '').replace(/_/g, ' ');
+                        item.appendChild(img);
+                        item.appendChild(name);
+                        item.addEventListener('click', () => {
+                            selectSquad(squad);
+                        });
+                        dropdownList.appendChild(item);
+                    });
+                    console.log('Loaded', squadsList.length, 'squads');
+                }
+            } catch (err) {
+                console.error('Failed to load squads list:', err);
+            }
+        }
+
+        function selectOperator(filename) {
+            const input = document.getElementById('input-player-op-icon');
+            const dropdown = document.getElementById('operator-dropdown');
+            if (input && dropdown) {
+                input.value = filename;
+                updateDropdownValueState('operator-dropdown', filename);
+                toggleDropdown('operator-dropdown', false);
+                
+                // Directly update appData and UI for immediate feedback
+                const fullPath = `img/Operators/${filename}`;
+                setProp(appData, 'player.op_icon_url', fullPath);
+                updateUIFromData();
+                sendFullDataUpdate();
+            }
+        }
+
+        function selectSquad(filename) {
+            const input = document.getElementById('input-player-squad-icon');
+            const dropdown = document.getElementById('squad-dropdown');
+            if (input && dropdown) {
+                input.value = filename;
+                updateDropdownValueState('squad-dropdown', filename);
+                toggleDropdown('squad-dropdown', false);
+                
+                // Directly update appData and UI for immediate feedback
+                const fullPath = `img/Squads/${filename}`;
+                setProp(appData, 'player.squad_icon_url', fullPath);
+                updateUIFromData();
+                sendFullDataUpdate();
+            }
+        }
+
+        function clearOperator() {
+            const input = document.getElementById('input-player-op-icon');
+            const dropdown = document.getElementById('operator-dropdown');
+            if (input && dropdown) {
+                input.value = '';
+                updateDropdownValueState('operator-dropdown', '');
+                toggleDropdown('operator-dropdown', false);
+                
+                setProp(appData, 'player.op_icon_url', '');
+                updateUIFromData();
+                sendFullDataUpdate();
+            }
+        }
+
+        function clearSquad() {
+            const input = document.getElementById('input-player-squad-icon');
+            const dropdown = document.getElementById('squad-dropdown');
+            if (input && dropdown) {
+                input.value = '';
+                updateDropdownValueState('squad-dropdown', '');
+                toggleDropdown('squad-dropdown', false);
+                
+                setProp(appData, 'player.squad_icon_url', '');
+                updateUIFromData();
+                sendFullDataUpdate();
+            }
+        }
+
+        function toggleDropdown(dropdownId, forceState) {
+            const dropdown = document.getElementById(dropdownId);
+            if (!dropdown) return;
+            
+            const isOpen = dropdown.classList.contains('open');
+            const shouldOpen = forceState !== undefined ? forceState : !isOpen;
+            
+            if (shouldOpen) {
+                dropdown.classList.add('open');
+            } else {
+                dropdown.classList.remove('open');
+            }
+        }
+
+        function updateDropdownValueState(dropdownId, value) {
+            const dropdown = document.getElementById(dropdownId);
+            if (!dropdown) return;
+            
+            if (value && value.trim()) {
+                dropdown.classList.add('has-value');
+            } else {
+                dropdown.classList.remove('has-value');
+            }
+        }
+
+        function filterDropdown(dropdownId, inputValue) {
+            const dropdown = document.getElementById(dropdownId);
+            if (!dropdown) return;
+            
+            const items = dropdown.querySelectorAll('.custom-dropdown-item');
+            const searchTerm = inputValue.toLowerCase();
+            let hasMatches = false;
+            
+            items.forEach(item => {
+                const name = item.querySelector('.custom-dropdown-item-name').textContent.toLowerCase();
+                const matches = name.includes(searchTerm);
+                item.style.display = matches ? 'flex' : 'none';
+                if (matches) hasMatches = true;
+            });
+            
+            const emptyMsg = dropdown.querySelector('.custom-dropdown-empty');
+            if (!hasMatches && items.length > 0) {
+                if (!emptyMsg) {
+                    const empty = document.createElement('div');
+                    empty.className = 'custom-dropdown-empty';
+                    empty.textContent = 'No matches found';
+                    dropdown.appendChild(empty);
+                }
+            } else if (emptyMsg) {
+                emptyMsg.remove();
+            }
+        }
+
+        function setupCustomDropdown(dropdownId, inputId, filterFn) {
+            const dropdown = document.getElementById(dropdownId);
+            const input = document.getElementById(inputId);
+            const arrow = dropdown?.querySelector('.custom-dropdown-arrow');
+            const clearBtn = dropdown?.querySelector('.custom-dropdown-clear');
+            
+            if (!dropdown || !input) return;
+            
+            // Arrow click to toggle dropdown
+            if (arrow) {
+                arrow.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    toggleDropdown(dropdownId);
+                    if (dropdown.classList.contains('open')) {
+                        filterFn(dropdownId, input.value);
+                        input.focus();
+                    }
+                });
+            }
+            
+            // Clear button click
+            if (clearBtn) {
+                clearBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (dropdownId === 'operator-dropdown') {
+                        clearOperator();
+                    } else if (dropdownId === 'squad-dropdown') {
+                        clearSquad();
+                    }
+                });
+            }
+            
+            // Open dropdown on focus/click
+            input.addEventListener('focus', () => {
+                dropdown.classList.add('open');
+                filterFn(dropdownId, input.value);
+            });
+            
+            input.addEventListener('click', (e) => {
+                e.stopPropagation();
+                dropdown.classList.add('open');
+                filterFn(dropdownId, input.value);
+            });
+            
+            // Filter as user types
+            input.addEventListener('input', (e) => {
+                const value = e.target.value;
+                updateDropdownValueState(dropdownId, value);
+                filterFn(dropdownId, value);
+                // Update data when user types (for manual entry)
+                updateDataFromControls();
+            });
+            
+            // Highlight selected item
+            input.addEventListener('input', () => {
+                const items = dropdown.querySelectorAll('.custom-dropdown-item');
+                items.forEach(item => {
+                    const name = item.querySelector('.custom-dropdown-item-name').textContent;
+                    const filename = item.dataset.value;
+                    if (input.value === filename || input.value === name) {
+                        item.classList.add('selected');
+                    } else {
+                        item.classList.remove('selected');
+                    }
+                });
+            });
+            
+            // Update value state on load
+            updateDropdownValueState(dropdownId, input.value);
+        }
+
+        function buildTwitchChatUrl(channel, theme = 'dark') {
+            const channelSlug = normalizeTwitchChannelInput(channel);
+            if (!channelSlug) return '';
+            const hostname = window.location.hostname || 'localhost';
+            const parents = new Set();
+            if (hostname) {
+                parents.add(hostname);
+            }
+            parents.add('localhost');
+            parents.add('127.0.0.1');
+            const parentParams = Array.from(parents).map(parent => `parent=${encodeURIComponent(parent)}`).join('&');
+            const normalizedTheme = theme === 'light' ? 'light' : 'dark';
+            
+            // Standard embed format - this is the recommended format for iframes
+            return `https://www.twitch.tv/embed/${encodeURIComponent(channelSlug)}/chat?${parentParams}&theme=${normalizedTheme}`;
+        }
+
+        // --- Data Sync & UI Updates ---
+        
+        /**
+         * Takes the global appData and updates the entire UI.
+         */
+        function updateUIFromData() {
+            if (!appData) return;
+
+            // --- Player Widget ---
+            if (appData.player) {
+                const p = appData.player;
+                document.getElementById('player-name').innerText = p.name;
+                document.getElementById('player-team').innerText = p.team;
+                document.getElementById('player-pfp').src = p.pfp_url;
+                // Handle squad and operator icons - convert filename to full path if needed
+                let squadIconSrc = p.squad_icon_url || '';
+                // If it's base64, use it as-is. Otherwise, convert filename to full path if needed
+                if (squadIconSrc && !squadIconSrc.startsWith('http') && !squadIconSrc.startsWith('data:') && !squadIconSrc.startsWith('img/')) {
+                    squadIconSrc = `img/Squads/${squadIconSrc}`;
+                }
+                let opIconSrc = p.op_icon_url || '';
+                // If it's base64, use it as-is. Otherwise, convert filename to full path if needed
+                if (opIconSrc && !opIconSrc.startsWith('http') && !opIconSrc.startsWith('data:') && !opIconSrc.startsWith('img/')) {
+                    opIconSrc = `img/Operators/${opIconSrc}`;
+                }
+                // Set overlay images (always update these)
+                const squadImg = document.getElementById('player-squad-icon');
+                const opImg = document.getElementById('player-op-icon');
+                if (squadImg) squadImg.src = squadIconSrc || '';
+                if (opImg) opImg.src = opIconSrc || '';
+                updateElement('player', p.pos, p.scale, p.visible);
+                
+                if (isControlPanel) {
+                    document.getElementById('preview-player-pfp').src = p.pfp_url || '';
+                    // Extract just the filename for the input field (only update if not focused)
+                    const squadInput = document.getElementById('input-player-squad-icon');
+                    const opInput = document.getElementById('input-player-op-icon');
+                    if (squadInput && p.squad_icon_url && document.activeElement !== squadInput) {
+                        // Skip if it's base64 data (starts with data:)
+                        if (p.squad_icon_url.startsWith('data:')) {
+                            squadInput.value = '';
+                        } else {
+                            // Extract filename from path (handles both "img/Squads/name.webp" and just "name.webp")
+                            const squadFilename = p.squad_icon_url.replace(/^.*[\/\\]/, '').replace(/^img\/Squads\//, '');
+                            if (squadInput.value !== squadFilename) {
+                                squadInput.value = squadFilename;
+                            }
+                        }
+                    }
+                    if (opInput && p.op_icon_url && document.activeElement !== opInput) {
+                        // Skip if it's base64 data (starts with data:)
+                        if (p.op_icon_url.startsWith('data:')) {
+                            opInput.value = '';
+                        } else {
+                            // Extract filename from path (handles both "img/Operators/name.png" and just "name.png")
+                            const opFilename = p.op_icon_url.replace(/^.*[\/\\]/, '').replace(/^img\/Operators\//, '');
+                            if (opInput.value !== opFilename) {
+                                opInput.value = opFilename;
+                            }
+                        }
+                    }
+                    // Set preview images
+                    const previewSquadImg = document.getElementById('preview-player-squad-icon');
+                    const previewOpImg = document.getElementById('preview-player-op-icon');
+                    if (previewSquadImg) previewSquadImg.src = squadIconSrc || '';
+                    if (previewOpImg) previewOpImg.src = opIconSrc || '';
+                    
+                    // Update dropdown value state to show/hide clear button
+                    const squadInputValue = squadInput ? squadInput.value : '';
+                    const opInputValue = opInput ? opInput.value : '';
+                    updateDropdownValueState('squad-dropdown', squadInputValue);
+                    updateDropdownValueState('operator-dropdown', opInputValue);
+                }
+            }
+            
+            // --- Text Widgets ---
+            if (appData.text_left) {
+                const tl = appData.text_left;
+                document.getElementById('text-left-display').innerText = tl.text;
+                document.getElementById('text-left').style.fontSize = `${tl.fontSize}px`;
+                updateElement('text-left', tl.pos, tl.scale, tl.visible);
+            }
+            if (appData.text_right) {
+                const tr = appData.text_right;
+                document.getElementById('text-right-display').innerText = tr.text;
+                document.getElementById('text-right').style.fontSize = `${tr.fontSize}px`;
+                updateElement('text-right', tr.pos, tr.scale, tr.visible);
+            }
+            
+            // --- Discord Widget ---
+            if (appData.discord_widget) {
+                const dw = appData.discord_widget;
+                const iframe = document.getElementById('discord-iframe');
+                if (iframe.src !== dw.url) {
+                    iframe.src = dw.url;
+                    iframe.style.width = '';
+                    iframe.style.height = '';
+                    const container = document.getElementById('discord-widget');
+                    if (container) {
+                        container.style.width = '';
+                        container.style.height = '';
+                    }
+                }
+                try {
+                    discordIframeOrigin = new URL(dw.url).origin;
+                } catch (err) {
+                    if (dw.url && dw.url.includes('streamkit.discord.com')) {
+                        discordIframeOrigin = 'https://streamkit.discord.com';
+                    } else {
+                        discordIframeOrigin = null;
+                    }
+                }
+                updateElement('discord-widget', dw.pos, dw.scale, dw.visible);
+            }
+
+            // --- Twitch Chat Widget ---
+            if (appData.twitch_chat) {
+                const tc = appData.twitch_chat;
+                const iframe = document.getElementById('twitch-chat-iframe');
+                const placeholder = document.getElementById('twitch-chat-placeholder');
+                const container = document.getElementById('twitch-widget');
+                
+                if (!container) {
+                    console.error('Twitch widget container not found');
+                    return;
+                }
+                
+                let channel = tc.channel || '';
+                channel = normalizeTwitchChannelInput(channel);
+                tc.channel = channel;
+                const theme = tc.theme || 'dark';
+                
+                // Auto-show widget if channel is set (unless explicitly hidden)
+                if (channel && tc.visible === undefined) {
+                    tc.visible = true;
+                }
+                
+                let showPlaceholder = false;
+                let placeholderMessage = 'Twitch chat will appear here once a channel is set.';
+
+                if (!channel) {
+                    showPlaceholder = true;
+                } else if (!isTwitchEmbedSupported()) {
+                    showPlaceholder = true;
+                    placeholderMessage = 'Twitch chat requires the overlay to be loaded via http:// or https://.';
+                } else if (!iframe) {
+                    showPlaceholder = true;
+                    placeholderMessage = 'Twitch chat iframe not found.';
+                } else {
+                    const expectedSrc = buildTwitchChatUrl(channel, theme);
+                    const storedSrc = iframe.dataset.src || '';
+                    if (expectedSrc !== storedSrc && expectedSrc) {
+                        console.log('Loading Twitch chat:', expectedSrc);
+                        iframe.src = expectedSrc;
+                        iframe.dataset.src = expectedSrc;
+                    }
+                    iframe.dataset.channel = channel;
+                    iframe.dataset.theme = theme;
+                }
+
+                if (placeholder && iframe) {
+                    if (showPlaceholder) {
+                        placeholder.textContent = placeholderMessage;
+                        placeholder.classList.remove('hidden');
+                        iframe.classList.add('hidden');
+                        if (iframe.src && iframe.src !== 'about:blank') {
+                            iframe.src = 'about:blank';
+                        }
+                        iframe.dataset.src = '';
+                    } else {
+                        placeholder.classList.add('hidden');
+                        iframe.classList.remove('hidden');
+                    }
+                }
+
+                updateElement('twitch-widget', tc.pos, tc.scale, tc.visible);
+            }
+
+            // --- Update Control Panel Inputs (if it's visible) ---
+            if (isControlPanel) {
+                // Text/URL inputs
+                document.querySelectorAll('#controls input[data-path], #controls select[data-path]').forEach(control => {
+                    if (control.tagName === 'INPUT' && control.type === 'file') return; // Don't set value for file inputs
+                    const path = control.getAttribute('data-path');
+                    const value = getProp(appData, path);
+                    if (control.tagName === 'INPUT' && control.type === 'checkbox') {
+                        control.checked = !!value;
+                        return;
+                    }
+                    if (document.activeElement === control) return;
+                    if (control.tagName === 'SELECT') {
+                        const fallback = control.querySelector('option')?.value ?? '';
+                        control.value = value ?? fallback;
+                    } else {
+                        control.value = value || '';
+                    }
+                });
+            }
+        }
+        
+        /**
+         * Helper to update an element's core properties (pos, scale, visibility)
+         */
+        function updateElement(elementId, pos, scale, visible) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+
+            // Don't update if we are actively dragging/resizing THIS element
+            if (activeElement === el) return; 
+
+            el.style.top = `${pos.y}px`;
+            el.style.left = `${pos.x}px`;
+            el.style.transform = `scale(${scale.x})`; // Only use x for proportional
+            el.classList.toggle('visible', visible);
+            el.classList.toggle('hidden', !visible);
+        }
+        
+        /**
+         * Sends the *entire* appData object to the server.
+         */
+        function sendFullDataUpdate() {
+            if (!socket) return;
+            // This is the single point of truth for sending data
+            socket.emit('data_change', appData);
+        }
+
+        /**
+         * Attempts to resize the Discord iframe when we get sizing info.
+         */
+        function handleDiscordIframeResize(width, height) {
+            const iframe = document.getElementById('discord-iframe');
+            const container = document.getElementById('discord-widget');
+            if (!iframe) return;
+            if (typeof width === 'number' && width > 0) {
+                iframe.style.width = `${width}px`;
+                if (container) {
+                    container.style.width = `${width}px`;
+                }
+            }
+            if (typeof height === 'number' && height > 0) {
+                iframe.style.height = `${height}px`;
+                if (container) {
+                    container.style.height = `${height}px`;
+                }
+            }
+        }
+
+        /**
+         * Reads all inputs and updates the appData object.
+         */
+        function updateDataFromControls() {
+            if (!isControlPanel) return;
+            document.querySelectorAll('#controls input[data-path], #controls select[data-path]').forEach(control => {
+                const path = control.getAttribute('data-path');
+                if (control.tagName === 'INPUT') {
+                    if (control.type === 'file') {
+                        // Handled by sendImageUpdate
+                    } else if (control.type === 'checkbox') {
+                        setProp(appData, path, control.checked);
+                    } else {
+                        let value = control.value;
+                        if (path === 'twitch_chat.channel') {
+                            value = normalizeTwitchChannelInput(value);
+                            control.value = value;
+                            // Auto-show widget when channel is set
+                            if (value && appData.twitch_chat) {
+                                appData.twitch_chat.visible = true;
+                            }
+                        } else if (path === 'player.squad_icon_url') {
+                            // Convert squad filename to full path
+                            if (value && value.trim()) {
+                                const trimmed = value.trim();
+                                // Skip if it's base64 data
+                                if (trimmed.startsWith('data:')) {
+                                    value = '';
+                                } else if (trimmed.startsWith('img/Squads/')) {
+                                    value = trimmed;
+                                } else {
+                                    value = `img/Squads/${trimmed}`;
+                                }
+                            } else {
+                                value = '';
+                            }
+                        } else if (path === 'player.op_icon_url') {
+                            // Convert operator filename to full path
+                            if (value && value.trim()) {
+                                const trimmed = value.trim();
+                                // Skip if it's base64 data
+                                if (trimmed.startsWith('data:')) {
+                                    value = '';
+                                } else if (trimmed.startsWith('img/Operators/')) {
+                                    value = trimmed;
+                                } else {
+                                    value = `img/Operators/${trimmed}`;
+                                }
+                            } else {
+                                value = '';
+                            }
+                        }
+                        setProp(appData, path, value);
+                    }
+                } else if (control.tagName === 'SELECT') {
+                    setProp(appData, path, control.value);
+                }
+            });
+            // Update UI immediately for instant feedback
+            updateUIFromData();
+            // Then send to server
+            sendFullDataUpdate();
+        }
+
+        /**
+         * Handles file uploads, converts to Base64, and updates data.
+         */
+        function sendImageUpdate(file, path) {
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const dataUrl = event.target.result;
+                setProp(appData, path, dataUrl); // Update local data
+                if (isControlPanel) {
+                    updateUIFromData(); // Reflect change immediately in previews
+                }
+                sendFullDataUpdate(); // Send to server
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // --- Drag, Resize, Font-Resize Logic ---
+        
+        // Vars for all interactions
+        let isDragging = false;
+        let isResizing = false;
+        let isFontResizing = false;
+        let startPos = { x: 0, y: 0 };
+        let startMouse = { x: 0, y: 0 };
+        let startScale = 1;
+        let startFontSize = 24;
+        let dataPath = ''; // Which item in appData are we editing? (e.g., "player")
+
+        function onInteractionStart(e, type) {
+            if (isControlPanel || (e.button && e.button !== 0)) return; // Only left click
+            
+            // Don't start dragging if clicking directly on an iframe (allow iframe interaction)
+            const target = e.target;
+            if (target.tagName === 'IFRAME' || target.closest('iframe')) {
+                return; // Let the iframe handle the click
+            }
+            
+            activeElement = e.target.closest('.draggable');
+            if (!activeElement) return;
+            
+            const elementId = activeElement.id;
+            // Map element ID to its data path
+            const idToPath = {
+                'player': 'player',
+                'text-left': 'text_left',
+                'text-right': 'text_right',
+                'discord-widget': 'discord_widget',
+                'twitch-widget': 'twitch_chat'
+            };
+            dataPath = idToPath[elementId];
+            if (!dataPath) return; // Not a draggable we manage
+            
+            e.preventDefault();
+            e.stopPropagation();
+
+            const clientX = e.clientX || e.touches[0].clientX;
+            const clientY = e.clientY || e.touches[0].clientY;
+            
+            startMouse = { x: clientX, y: clientY };
+            
+            if (type === 'drag') {
+                isDragging = true;
+                const pos = getProp(appData, `${dataPath}.pos`) || { x: 0, y: 0 };
+                startPos = { x: pos.x || 0, y: pos.y || 0 };
+            } else if (type === 'resize') {
+                isResizing = true;
+                startScale = getProp(appData, `${dataPath}.scale.x`) || 1;
+            } else if (type === 'font-resize') {
+                isFontResizing = true;
+                startFontSize = getProp(appData, `${dataPath}.fontSize`) || parseInt(window.getComputedStyle(activeElement).fontSize, 10) || 24;
+            }
+
+            document.addEventListener('mousemove', onInteractionMove);
+            document.addEventListener('mouseup', onInteractionEnd);
+            document.addEventListener('touchmove', onInteractionMove, { passive: false });
+            document.addEventListener('touchend', onInteractionEnd);
+        }
+
+        function onInteractionMove(e) {
+            if (!isDragging && !isResizing && !isFontResizing) return;
+            if (!activeElement || !dataPath) return;
+            e.preventDefault();
+
+            const clientX = e.clientX || e.touches[0].clientX;
+            const clientY = e.clientY || e.touches[0].clientY;
+            
+            const dx = clientX - startMouse.x;
+            const dy = clientY - startMouse.y;
+
+            // --- THIS IS THE FIX ---
+            // We get the *current* scale and position from the appData,
+            // so dragging and resizing don't fight each other.
+            let currentScale = getProp(appData, `${dataPath}.scale.x`) || 1;
+            let currentPos = getProp(appData, `${dataPath}.pos`) || { x: 0, y: 0 };
+
+            if (isDragging) {
+                const newX = startPos.x + dx;
+                const newY = startPos.y + dy;
+                setProp(appData, `${dataPath}.pos.x`, newX);
+                setProp(appData, `${dataPath}.pos.y`, newY);
+                // Apply BOTH position and scale
+                activeElement.style.left = `${newX}px`;
+                activeElement.style.top = `${newY}px`;
+                activeElement.style.transform = `scale(${currentScale})`;
+            } 
+            else if (isResizing) {
+                const newScale = Math.max(0.1, startScale + (dx / 200)); // 200px drag = 1.0 scale
+                setProp(appData, `${dataPath}.scale.x`, newScale);
+                setProp(appData, `${dataPath}.scale.y`, newScale); // Keep it proportional
+                // Apply BOTH position and scale
+                activeElement.style.left = `${currentPos.x}px`;
+                activeElement.style.top = `${currentPos.y}px`;
+                activeElement.style.transform = `scale(${newScale})`;
+            } 
+            else if (isFontResizing) {
+                const newSize = Math.max(8, startFontSize + (dy / 5)); // 5px drag = 1px font size
+                setProp(appData, `${dataPath}.fontSize`, newSize);
+                // Just apply font size, no transform needed
+                activeElement.style.fontSize = `${newSize}px`;
+            }
+        }
+
+        function onInteractionEnd() {
+            if (isDragging || isResizing || isFontResizing) {
+                // Send the final, updated data to the server
+                sendFullDataUpdate();
+            }
+            
+            isDragging = false;
+            isResizing = false;
+            isFontResizing = false;
+            activeElement = null;
+            dataPath = '';
+            
+            document.removeEventListener('mousemove', onInteractionMove);
+            document.removeEventListener('mouseup', onInteractionEnd);
+            document.removeEventListener('touchmove', onInteractionMove);
+            document.removeEventListener('touchend', onInteractionEnd);
+        }
+
+        // --- Initialization ---
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const panel = document.getElementById('controls');
+            
+            if (urlParams.has('controls')) {
+                isControlPanel = true;
+                panel.style.display = 'block';
+                document.body.classList.add('controls-visible');
+            } else {
+                isControlPanel = false;
+                panel.style.display = 'none';
+                document.body.classList.remove('controls-visible');
+            }
+
+            // --- Connect to Socket.IO Server ---
+            socket = io.connect('http://' + document.domain + ':' + location.port);
+
+            socket.on('connect', () => {
+                console.log('Connected to server!');
+                // On connect, we don't need to request data,
+                // the server will send it automatically.
+            });
+
+            socket.on('data_update', (data) => {
+                console.log('Received data update');
+                appData = data || {};
+                const originalChannel = appData?.twitch_chat?.channel ?? '';
+                const sanitizedChannel = normalizeTwitchChannelInput(originalChannel);
+                if (appData.twitch_chat) {
+                    appData.twitch_chat.channel = sanitizedChannel;
+                }
+                updateUIFromData();
+                if (sanitizedChannel !== (originalChannel || '')) {
+                    sendFullDataUpdate();
+                }
+            });
+
+            socket.on('disconnect', () => {
+                console.log('Disconnected from server');
+            });
+
+            // Listen for size messages from the Discord iframe
+            window.addEventListener('message', (event) => {
+                console.log('Discord widget postMessage', event.origin, event.data);
+                if (!discordIframeOrigin) return;
+                const allowedOrigins = [discordIframeOrigin, 'https://streamkit.discord.com', 'https://streamkit.discordapp.com'];
+                if (!allowedOrigins.includes(event.origin)) {
+                    return;
+                }
+                const data = event.data;
+                if (!data) return;
+
+                let width;
+                let height;
+
+                if (typeof data === 'string') {
+                    try {
+                        const parsed = JSON.parse(data);
+                        if (parsed) {
+                            width = parsed.width ?? parsed.w ?? parsed.innerWidth ?? parsed.frameWidth ?? parsed.size?.width;
+                            height = parsed.height ?? parsed.h ?? parsed.innerHeight ?? parsed.frameHeight ?? parsed.size?.height;
+                            if (!width && Array.isArray(parsed)) {
+                                width = parsed[0];
+                                height = parsed[1];
+                            }
+                        }
+                    } catch (err) {
+                        // Not JSON, ignore
+                    }
+                } else if (Array.isArray(data)) {
+                    width = data[0];
+                    height = data[1];
+                } else if (typeof data === 'object') {
+                    width = data.width ?? data.w ?? data.innerWidth ?? data.frameWidth ?? data.size?.width;
+                    height = data.height ?? data.h ?? data.innerHeight ?? data.frameHeight ?? data.size?.height;
+                }
+
+                if (typeof width === 'number' || typeof height === 'number') {
+                    console.log('Discord iframe resize message received', width, height, data);
+                    handleDiscordIframeResize(width, height);
+                }
+            });
+
+            const discordIframe = document.getElementById('discord-iframe');
+            if (discordIframe) {
+                discordIframe.addEventListener('load', () => {
+                    try {
+                        const doc = discordIframe.contentDocument || discordIframe.contentWindow.document;
+                        if (!doc) return;
+                        const width = doc.body ? doc.body.scrollWidth : undefined;
+                        const height = doc.body ? doc.body.scrollHeight : undefined;
+                        handleDiscordIframeResize(width, height);
+                    } catch (err) {
+                        // Cross-origin access is not allowed; ignore.
+                    }
+                });
+            }
+
+            // --- Setup Control Panel Listeners ---
+            if (isControlPanel) {
+                // Load operators and squads lists
+                loadOperatorsList();
+                loadSquadsList();
+                
+                // Setup custom dropdowns
+                setupCustomDropdown('operator-dropdown', 'input-player-op-icon', filterDropdown);
+                setupCustomDropdown('squad-dropdown', 'input-player-squad-icon', filterDropdown);
+                
+                document.querySelectorAll('#controls input[data-path], #controls select[data-path]').forEach(control => {
+                    const path = control.getAttribute('data-path');
+                    // Skip file uploads for operator and squad icons (they're now text inputs)
+                    if (control.tagName === 'INPUT' && control.type === 'file') {
+                        if (path !== 'player.squad_icon_url' && path !== 'player.op_icon_url') {
+                            control.addEventListener('change', (e) => {
+                                sendImageUpdate(e.target.files[0], path);
+                            });
+                        }
+                    } else {
+                        let eventType = 'input';
+                        if (control.tagName === 'INPUT' && control.type === 'checkbox') {
+                            eventType = 'change';
+                        } else if (control.tagName === 'SELECT') {
+                            eventType = 'change';
+                        }
+                        // Skip operator and squad inputs - they're handled by custom dropdowns
+                        if (path !== 'player.squad_icon_url' && path !== 'player.op_icon_url') {
+                            control.addEventListener(eventType, updateDataFromControls);
+                        }
+                    }
+                });
+                
+                document.getElementById('close-controls').addEventListener('click', () => {
+                    panel.style.display = 'none';
+                    document.body.classList.remove('controls-visible');
+                });
+            }
+            
+            // Close dropdowns when clicking outside
+            document.addEventListener('click', (e) => {
+                if (!e.target.closest('.custom-dropdown')) {
+                    document.querySelectorAll('.custom-dropdown').forEach(dd => {
+                        toggleDropdown(dd.id, false);
+                    });
+                }
+            });
+
+            // --- Setup Draggable/Resizable Widgets ---
+            if (!isControlPanel) {
+                document.body.addEventListener('mousedown', (e) => {
+                    if (e.target.classList.contains('resize-handle')) {
+                        onInteractionStart(e, 'resize');
+                    } else if (e.target.classList.contains('font-resize-handle')) {
+                        onInteractionStart(e, 'font-resize');
+                    } else if (e.target.classList.contains('drag-handle')) {
+                        // Drag handle explicitly allows dragging
+                        onInteractionStart(e, 'drag');
+                    } else if (e.target.closest('.draggable')) {
+                        // Only drag if not clicking on iframe
+                        const target = e.target;
+                        if (target.tagName !== 'IFRAME' && !target.closest('iframe')) {
+                            onInteractionStart(e, 'drag');
+                        }
+                    }
+                });
+                
+                // Add touch support
+                document.body.addEventListener('touchstart', (e) => {
+                    if (e.target.classList.contains('resize-handle')) {
+                        onInteractionStart(e, 'resize');
+                    } else if (e.target.classList.contains('font-resize-handle')) {
+                        onInteractionStart(e, 'font-resize');
+                    } else if (e.target.classList.contains('drag-handle')) {
+                        // Drag handle explicitly allows dragging
+                        onInteractionStart(e, 'drag');
+                    } else if (e.target.closest('.draggable')) {
+                        // Only drag if not clicking on iframe
+                        const target = e.target;
+                        if (target.tagName !== 'IFRAME' && !target.closest('iframe')) {
+                            onInteractionStart(e, 'drag');
+                        }
+                    }
+                }, { passive: false });
+            }
+        });
+    </script>
+</body>
+</html>
