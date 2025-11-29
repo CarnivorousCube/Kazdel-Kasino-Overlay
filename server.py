@@ -14,7 +14,17 @@ class MyFlask(Flask):
 
 app = MyFlask(__name__, static_folder='.', template_folder='.') # Serve static files from current directory
 app.config['SECRET_KEY'] = 'your_secret_key_here' # Not super important for local use
-socketio = SocketIO(app)
+# Increase maxHttpBufferSize to 10MB to handle large base64-encoded images
+# Base64 encoding increases size by ~33%, so this allows ~7.5MB image files
+# Use WebSocket transport for better large message handling
+# Increase ping_timeout and ping_interval to prevent disconnections
+socketio = SocketIO(
+    app, 
+    maxHttpBufferSize=10*1024*1024,  # 10 MB
+    ping_timeout=60,  # Increase timeout for large messages
+    ping_interval=25,  # Check connection every 25 seconds
+    cors_allowed_origins="*"  # Allow CORS if needed
+)
 
 # --- Default Data ---
 # This is the data that will be loaded if no data is saved yet.
@@ -83,10 +93,33 @@ def load_data():
 
 def save_data(data):
     try:
+        # Verify we have valid data before saving
+        if not data:
+            print('Warning: Attempted to save None/empty data')
+            return False
+        
+        # Check if player.pfp_url exists and log preview
+        if data.get('player') and data['player'].get('pfp_url'):
+            pfp_preview = data['player']['pfp_url'][:50] if isinstance(data['player']['pfp_url'], str) else 'None'
+            print(f'Saving data with pfp_url preview: {pfp_preview}...')
+        
         with DATA_FILE.open('w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
-    except OSError as exc:
+        print(f'Successfully saved data to {DATA_FILE}')
+        
+        # Verify the save by reading it back
+        with DATA_FILE.open('r', encoding='utf-8') as f:
+            saved = json.load(f)
+            if saved.get('player') and saved['player'].get('pfp_url'):
+                saved_preview = saved['player']['pfp_url'][:50] if isinstance(saved['player']['pfp_url'], str) else 'None'
+                print(f'Verified saved data has pfp_url: {saved_preview}...')
+        
+        return True
+    except Exception as exc:
+        import traceback
         print(f'Failed to persist overlay state: {exc}')
+        traceback.print_exc()
+        return False
 
 
 # --- Data Handling ---
@@ -134,11 +167,87 @@ def handle_connect():
 def handle_data_change(data):
     """Received a change from the control panel."""
     global current_data
-    current_data = data
-    save_data(current_data)
-    # Broadcast the new data to ALL connected clients (except the sender)
-    emit('data_update', current_data, broadcast=True, include_self=False)
-    print('Data updated and broadcasted')
+    try:
+        # Verify we received valid data
+        if not data:
+            print('ERROR: Received None/empty data!')
+            return
+        
+        # Check data size before processing
+        import sys
+        import json
+        data_json = json.dumps(data)
+        data_size = len(data_json)
+        data_size_mb = data_size / 1024 / 1024
+        max_size = 10 * 1024 * 1024  # 10 MB
+        
+        print(f'=== Received data_change, size: {data_size_mb:.2f} MB ===')
+        
+        if data_size > max_size:
+            print(f'Warning: Data size ({data_size_mb:.2f} MB) exceeds limit, but attempting to save anyway')
+        
+        # Check if pfp_url is present and log its size and type
+        if data.get('player') and data['player'].get('pfp_url'):
+            pfp_url = data['player']['pfp_url']
+            if isinstance(pfp_url, str):
+                pfp_size = len(pfp_url)
+                pfp_size_mb = pfp_size / 1024 / 1024
+                pfp_type = 'unknown'
+                if pfp_url.startswith('data:image/png'):
+                    pfp_type = 'PNG'
+                elif pfp_url.startswith('data:image/webp'):
+                    pfp_type = 'WebP'
+                elif pfp_url.startswith('data:'):
+                    pfp_type = pfp_url.split(';')[0].split(':')[1] if ';' in pfp_url else 'data URL'
+                print(f'Player PFP URL: {pfp_type}, size: {pfp_size_mb:.2f} MB, preview: {pfp_url[:60]}...')
+            else:
+                print(f'Player PFP URL is not a string: {type(pfp_url)}')
+        else:
+            print('No player.pfp_url in received data')
+        
+        # Update current_data BEFORE saving
+        old_pfp = current_data.get('player', {}).get('pfp_url', '')[:50] if current_data.get('player', {}).get('pfp_url') else 'None'
+        new_pfp = data.get('player', {}).get('pfp_url', '')[:50] if data.get('player', {}).get('pfp_url') else 'None'
+        print(f'Updating data - Old PFP: {old_pfp}... -> New PFP: {new_pfp}...')
+        
+        current_data = data
+        
+        # Save the data and verify it succeeded
+        save_success = save_data(current_data)
+        if not save_success:
+            print('ERROR: Failed to save data! Not broadcasting update.')
+            return
+        
+        # Verify current_data still has the new image before broadcasting
+        if current_data.get('player') and current_data['player'].get('pfp_url'):
+            verify_preview = current_data['player']['pfp_url'][:50]
+            print(f'Broadcasting with PFP: {verify_preview}...')
+        
+        # Broadcast the new data to ALL connected clients (except the sender)
+        # Also send back to sender as confirmation
+        try:
+            emit('data_update', current_data, broadcast=True, include_self=False)
+            # Also send confirmation back to sender
+            emit('data_update', current_data)
+            print('Data updated and broadcasted to all clients')
+        except Exception as broadcast_error:
+            import traceback
+            print(f'Error broadcasting data_update: {broadcast_error}')
+            traceback.print_exc()
+            # Still try to send to sender
+            try:
+                emit('data_update', current_data)
+            except Exception as e:
+                print(f'Failed to send to sender: {e}')
+    except Exception as e:
+        import traceback
+        print(f'Error handling data change: {e}')
+        traceback.print_exc()
+        # Send current data back to sender (might be old data if save failed)
+        try:
+            emit('data_update', current_data)
+        except:
+            pass
 
 @socketio.on('disconnect')
 def handle_disconnect():

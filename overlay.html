@@ -661,6 +661,7 @@
         let socket;
         let activeElement = null; // For dragging/resizing
         let discordIframeOrigin = null;
+        let pendingImageUpload = null; // Track pending image uploads to prevent overwrites
 
         // --- Utility ---
         function getProp(obj, path) {
@@ -1215,9 +1216,63 @@
          * Sends the *entire* appData object to the server.
          */
         function sendFullDataUpdate() {
-            if (!socket) return;
+            if (!socket) {
+                console.error('Socket not connected');
+                return;
+            }
+            
+            // Check if data is too large before sending
+            const dataString = JSON.stringify(appData);
+            const dataSizeMB = (dataString.length / 1024 / 1024).toFixed(2);
+            const maxSize = 10 * 1024 * 1024; // 10 MB
+            console.log('Sending data update, size:', dataSizeMB, 'MB');
+            
+            if (dataString.length > maxSize) {
+                console.error('Data too large to send:', dataSizeMB, 'MB (max 10 MB)');
+                alert(`Image is too large to send (${dataSizeMB} MB). Maximum size is 10 MB. Please use a smaller image.`);
+                return;
+            }
+            
+            // Check if socket is actually connected
+            if (!socket.connected) {
+                console.error('Socket not connected, cannot send update');
+                alert('Not connected to server. Please refresh the page.');
+                return;
+            }
+            
             // This is the single point of truth for sending data
-            socket.emit('data_change', appData);
+            try {
+                // Verify socket is connected before sending
+                if (!socket.connected) {
+                    console.error('Socket not connected! Cannot send data.');
+                    alert('Not connected to server. Please refresh the page.');
+                    return;
+                }
+                
+                // Log what we're about to send
+                const pfpUrl = getProp(appData, 'player.pfp_url');
+                if (pfpUrl) {
+                    const pfpType = pfpUrl.startsWith('data:image/png') ? 'PNG' : 
+                                   pfpUrl.startsWith('data:image/webp') ? 'WebP' : 'Unknown';
+                    console.log(`Emitting data_change with ${pfpType} image, size: ${(pfpUrl.length / 1024 / 1024).toFixed(2)} MB`);
+                }
+                
+                socket.emit('data_change', appData);
+                console.log('Data change emitted successfully, waiting for server confirmation...');
+                
+                // Set a timeout to detect if server doesn't respond
+                setTimeout(() => {
+                    if (pendingImageUpload && pendingImageUpload.path === 'player.pfp_url') {
+                        console.warn('No server confirmation received after 2 seconds. Server may not have received the data.');
+                    }
+                }, 2000);
+            } catch (error) {
+                console.error('Error emitting data_change:', error);
+                alert('Failed to send image: ' + error.message);
+                if (pendingImageUpload) {
+                    pendingImageUpload = null;
+                }
+            }
         }
 
         /**
@@ -1306,20 +1361,156 @@
         }
 
         /**
+         * Compresses an image to reduce file size for reliable transmission
+         */
+        function compressImage(file, maxSizeMB = 2, quality = 0.85) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const img = new Image();
+                    img.onload = function() {
+                        const canvas = document.createElement('canvas');
+                        let width = img.width;
+                        let height = img.height;
+                        
+                        // Scale down if too large (max 2000px on longest side)
+                        const maxDimension = 2000;
+                        if (width > maxDimension || height > maxDimension) {
+                            if (width > height) {
+                                height = (height / width) * maxDimension;
+                                width = maxDimension;
+                            } else {
+                                width = (width / height) * maxDimension;
+                                height = maxDimension;
+                            }
+                        }
+                        
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+                        
+                        // Try different quality levels until we're under the size limit
+                        let currentQuality = quality;
+                        let dataUrl = canvas.toDataURL('image/jpeg', currentQuality);
+                        
+                        // If original is PNG and still too large, convert to JPEG
+                        if (file.type === 'image/png' && dataUrl.length > maxSizeMB * 1024 * 1024) {
+                            console.log('PNG too large, converting to JPEG...');
+                            dataUrl = canvas.toDataURL('image/jpeg', currentQuality);
+                        }
+                        
+                        // Reduce quality if still too large
+                        while (dataUrl.length > maxSizeMB * 1024 * 1024 && currentQuality > 0.3) {
+                            currentQuality -= 0.1;
+                            dataUrl = canvas.toDataURL('image/jpeg', currentQuality);
+                        }
+                        
+                        if (dataUrl.length > maxSizeMB * 1024 * 1024) {
+                            reject(new Error(`Image is too large even after compression (${(dataUrl.length / 1024 / 1024).toFixed(2)} MB). Please use a smaller image.`));
+                        } else {
+                            console.log(`Compressed image from ${(file.size / 1024 / 1024).toFixed(2)} MB to ${(dataUrl.length / 1024 / 1024).toFixed(2)} MB`);
+                            resolve(dataUrl);
+                        }
+                    };
+                    img.onerror = reject;
+                    img.src = e.target.result;
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        /**
+         * Processes the image data URL and sends it to the server
+         */
+        function processImageData(dataUrl, path) {
+            // Check base64 size (should be ~33% larger than original)
+            if (dataUrl.length > 10 * 1024 * 1024) {
+                alert('Image is too large after encoding. Please use a smaller image (max ~7.5 MB).');
+                pendingImageUpload = null;
+                return;
+            }
+            
+            // Track this as a pending upload
+            pendingImageUpload = {
+                path: path,
+                value: dataUrl,
+                timestamp: Date.now(),
+                retryCount: 0
+            };
+            
+            setProp(appData, path, dataUrl); // Update local data
+            if (isControlPanel) {
+                updateUIFromData(); // Reflect change immediately in previews
+            }
+            sendFullDataUpdate(); // Send to server
+            
+            // Clear pending after 10 seconds (should be confirmed by then)
+            setTimeout(() => {
+                if (pendingImageUpload && pendingImageUpload.path === path) {
+                    console.warn('Pending upload cleared after timeout');
+                    pendingImageUpload = null;
+                }
+            }, 10000);
+        }
+
+        /**
          * Handles file uploads, converts to Base64, and updates data.
          */
         function sendImageUpdate(file, path) {
             if (!file) return;
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                const dataUrl = event.target.result;
-                setProp(appData, path, dataUrl); // Update local data
-                if (isControlPanel) {
-                    updateUIFromData(); // Reflect change immediately in previews
-                }
-                sendFullDataUpdate(); // Send to server
-            };
-            reader.readAsDataURL(file);
+            
+            // Check file size before processing (10MB limit for base64, ~7.5MB original)
+            const maxFileSize = 7.5 * 1024 * 1024; // 7.5 MB
+            
+            if (file.size > maxFileSize) {
+                alert(`Image is too large (${(file.size / 1024 / 1024).toFixed(2)} MB). Maximum size is 7.5 MB. Please compress or resize the image.`);
+                return;
+            }
+            
+            // Compress if file is > 1.5MB (will be ~2MB+ after base64 encoding)
+            // Also always compress PNGs > 1MB since they compress well to JPEG
+            const shouldCompress = file.size > 1.5 * 1024 * 1024 || 
+                                  (file.type === 'image/png' && file.size > 1 * 1024 * 1024);
+            
+            if (shouldCompress) {
+                console.log(`Image is ${(file.size / 1024 / 1024).toFixed(2)} MB, compressing before upload to avoid Socket.IO disconnections...`);
+                compressImage(file, 1.5, 0.85)  // Target 1.5MB max
+                    .then(dataUrl => {
+                        console.log(`Compression complete, final size: ${(dataUrl.length / 1024 / 1024).toFixed(2)} MB`);
+                        processImageData(dataUrl, path);
+                    })
+                    .catch(error => {
+                        console.error('Compression failed:', error);
+                        alert(error.message || 'Failed to compress image. Please use a smaller image.');
+                    });
+            } else {
+                // Small images can be processed directly, but check size after encoding
+                const reader = new FileReader();
+                reader.onerror = function() {
+                    console.error('Error reading file:', reader.error);
+                    alert('Failed to read image file. Please try again.');
+                };
+                reader.onload = function(event) {
+                    const dataUrl = event.target.result;
+                    // If base64 is still too large, compress it
+                    if (dataUrl.length > 2 * 1024 * 1024) {
+                        console.log('Base64 encoded image is too large, compressing...');
+                        compressImage(file, 1.5, 0.85)
+                            .then(compressedUrl => {
+                                processImageData(compressedUrl, path);
+                            })
+                            .catch(error => {
+                                console.error('Compression failed:', error);
+                                alert(error.message || 'Image is too large. Please use a smaller image.');
+                            });
+                    } else {
+                        processImageData(dataUrl, path);
+                    }
+                };
+                reader.readAsDataURL(file);
+            }
         }
 
         // --- Drag, Resize, Font-Resize Logic ---
@@ -1463,7 +1654,16 @@
             }
 
             // --- Connect to Socket.IO Server ---
-            socket = io.connect('http://' + document.domain + ':' + location.port);
+            // Force WebSocket transport for better large message handling
+            socket = io.connect('http://' + document.domain + ':' + location.port, {
+                transports: ['websocket', 'polling'],  // Prefer WebSocket, fallback to polling
+                upgrade: true,
+                rememberUpgrade: true,
+                reconnection: true,
+                reconnectionDelay: 1000,
+                reconnectionAttempts: 5,
+                timeout: 20000  // 20 second timeout
+            });
 
             socket.on('connect', () => {
                 console.log('Connected to server!');
@@ -1472,7 +1672,47 @@
             });
 
             socket.on('data_update', (data) => {
-                console.log('Received data update');
+                console.log('Received data_update from server');
+                
+                // If we have a pending image upload, check if server received it
+                if (pendingImageUpload && data && data.player) {
+                    const pendingPath = pendingImageUpload.path;
+                    const pendingValue = pendingImageUpload.value;
+                    const serverValue = getProp(data, pendingPath);
+                    
+                    console.log('Pending upload check:', {
+                        path: pendingPath,
+                        pendingSize: pendingValue ? (pendingValue.length / 1024 / 1024).toFixed(2) + ' MB' : 'none',
+                        serverValuePreview: serverValue ? (serverValue.substring(0, 50) + '...') : 'none',
+                        valuesMatch: serverValue === pendingValue
+                    });
+                    
+                    // Only preserve if the incoming data doesn't have our new image
+                    // (meaning the server didn't receive our update)
+                    if (serverValue !== pendingValue && pendingValue && pendingValue.startsWith('data:')) {
+                        console.warn('Server data does not match pending upload! Preserving local image and retrying...');
+                        setProp(data, pendingPath, pendingValue);
+                        // Try sending again with exponential backoff
+                        const retryCount = pendingImageUpload.retryCount || 0;
+                        if (retryCount < 3) {
+                            pendingImageUpload.retryCount = retryCount + 1;
+                            setTimeout(() => {
+                                console.log(`Retry ${pendingImageUpload.retryCount} sending image...`);
+                                appData = data;
+                                sendFullDataUpdate();
+                            }, 500 * (retryCount + 1)); // 500ms, 1s, 1.5s
+                        } else {
+                            console.error('Failed to send image after 3 retries');
+                            alert('Failed to upload image after multiple attempts. The image may be too large or there is a connection issue.');
+                            pendingImageUpload = null;
+                        }
+                    } else if (serverValue === pendingValue) {
+                        // Server has our update, clear pending
+                        console.log('Server confirmed image upload, clearing pending');
+                        pendingImageUpload = null;
+                    }
+                }
+                
                 appData = data || {};
                 const originalChannel = appData?.twitch_chat?.channel ?? '';
                 const sanitizedChannel = normalizeTwitchChannelInput(originalChannel);
@@ -1487,6 +1727,14 @@
 
             socket.on('disconnect', () => {
                 console.log('Disconnected from server');
+            });
+            
+            socket.on('connect_error', (error) => {
+                console.error('Socket connection error:', error);
+            });
+            
+            socket.on('error', (error) => {
+                console.error('Socket error:', error);
             });
 
             // Listen for size messages from the Discord iframe
